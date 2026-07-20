@@ -54,6 +54,16 @@ const features = [
 
 const plans = [
   {
+    slug: "free",
+    name: "Free Preview",
+    price: 0,
+    features: [
+      "Free Preview Lessons",
+      "Basic Market Concepts",
+      "No credit card required",
+    ],
+  },
+  {
     slug: "basic",
     name: "Basic",
     price: 999,
