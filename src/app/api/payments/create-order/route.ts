@@ -9,6 +9,18 @@ import { razorpay } from "@/lib/razorpay";
  * full price again.
  */
 export async function POST(request: NextRequest) {
+  try {
+    return await handleCreateOrder(request);
+  } catch (err: any) {
+    console.error("create-order error:", err);
+    return NextResponse.json(
+      { error: err?.error?.description ?? err?.message ?? "Failed to create order." },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleCreateOrder(request: NextRequest) {
   const supabase = createClient();
   const {
     data: { user },
