@@ -1,129 +1,57 @@
-"use client";
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 
-import { useEffect, useState, Suspense } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
-
-function CheckoutInner() {
-  const searchParams = useSearchParams();
-  const router = useRouter();
+export async function POST(request: NextRequest) {
   const supabase = createClient();
-  const planSlug = searchParams.get("plan") ?? "basic";
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    document.body.appendChild(script);
-  }, []);
-
-  async function handlePay() {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        router.push(`/login?redirectedFrom=/checkout?plan=${planSlug}`);
-        return;
-      }
-
-      if (planSlug === "free") {
-        const res = await fetch("/api/plans/enroll-free", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ planSlug }),
-        });
-        const data = await res.json().catch(() => ({}));
-
-        if (!res.ok) {
-          setError(data.error ?? "Something went wrong.");
-          setLoading(false);
-          return;
-        }
-
-        router.push("/dashboard");
-        return;
-      }
-
-      const res = await fetch("/api/payments/create-order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ planSlug }),
-      });
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        setError(data.error ?? "Something went wrong creating the order.");
-        setLoading(false);
-        return;
-      }
-
-      const options = {
-        key: data.keyId,
-        amount: data.amount,
-        currency: data.currency,
-        name: "TradeMaster AI Academy",
-        description: `${planSlug} plan`,
-        order_id: data.razorpayOrderId,
-        handler: async function (response: any) {
-          const verifyRes = await fetch("/api/payments/verify", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(response),
-          });
-          if (verifyRes.ok) {
-            router.push("/dashboard");
-          } else {
-            setError("Payment verification failed.");
-          }
-        },
-        modal: {
-          ondismiss: function () {
-            setLoading(false);
-          },
-        },
-        theme: { color: "#0057FF" },
-      };
-
-      // @ts-ignore
-      const rzp = new window.Razorpay(options);
-      rzp.on("payment.failed", function () {
-        setError("Payment failed. Please try again.");
-        setLoading(false);
-      });
-      rzp.open();
-      setLoading(false);
-    } catch (err: any) {
-      setError(err?.message ?? "Something went wrong. Please try again.");
-      setLoading(false);
-    }
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  const isFree = planSlug === "free";
+  const { planSlug } = await request.json();
 
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-hero-gradient px-4">
-      <div className="card w-full max-w-md text-center">
-        <h1 className="font-display text-2xl font-bold text-navy">Checkout</h1>
-        <p className="mt-2 text-sm text-navy/60">Plan: {planSlug}</p>
-        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
-        <button onClick={handlePay} disabled={loading} className="btn-primary mt-6 w-full">
-          {loading ? "Loading…" : isFree ? "Start Free" : "Pay Now"}
-        </button>
-      </div>
-    </main>
-  );
-}
+  const { data: plan, error: planErr } = await supabase
+    .from("plans")
+    .select("*")
+    .eq("slug", planSlug)
+    .single();
 
-export default function CheckoutPage() {
-  return (
-    <Suspense fallback={null}>
-      <CheckoutInner />
-    </Suspense>
+  if (planErr || !plan) {
+    return NextResponse.json({ error: "Plan not found" }, { status: 400 });
+  }
+
+  if (Number(plan.price_inr) > 0) {
+    return NextResponse.json(
+      { error: "This plan requires payment and cannot be enrolled for free." },
+      { status: 400 }
+    );
+  }
+
+  const { data: existing } = await supabase
+    .from("enrollments")
+    .select("*, plans(*)")
+    .eq("user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (existing && Number((existing.plans as any).price_inr) > 0) {
+    return NextResponse.json(
+      { error: "You already have a paid plan active." },
+      { status: 400 }
+    );
+  }
+
+  const { error: enrollErr } = await supabase.from("enrollments").upsert(
+    { user_id: user.id, plan_id: plan.id, active: true },
+    { onConflict: "user_id" }
   );
+
+  if (enrollErr) {
+    return NextResponse.json({ error: enrollErr.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
 }
